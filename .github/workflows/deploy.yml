@@ -209,8 +209,6 @@ jobs:
         id: coverage
         shell: bash
         env:
-          # Drafter v2 does not currently honor this, but keep it here
-          # so coverage can be restored without restructuring the step.
           DRAFTER_SKIP: "true"
         run: |
           set -euo pipefail
@@ -220,13 +218,12 @@ jobs:
 
           "$DIAGNOSTIC_VENV/bin/python" -m coverage erase
 
-          # TEMPORARILY DISABLED while DRAFTER_SKIP support is restored:
-          # "$DIAGNOSTIC_VENV/bin/python" -m coverage run "$MAIN_FILE" \
-          #   2>&1 | tee _site/dashboard/coverage.txt
-          #
-          # "$DIAGNOSTIC_VENV/bin/python" -m coverage html \
-          #   -d _site/dashboard/coverage \
-          #   2>&1 | tee -a _site/dashboard/coverage.txt
+          "$DIAGNOSTIC_VENV/bin/python" -m coverage run "$MAIN_FILE" \
+             2>&1 | tee _site/dashboard/coverage.txt
+          
+          "$DIAGNOSTIC_VENV/bin/python" -m coverage html \
+             -d _site/dashboard/coverage \
+             2>&1 | tee -a _site/dashboard/coverage.txt
       - name: Run linter
         id: lint
         continue-on-error: true
