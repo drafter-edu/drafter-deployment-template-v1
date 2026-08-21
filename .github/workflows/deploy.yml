@@ -25,6 +25,8 @@ env:
   # For semester-level reproducibility, replace this with an exact version,
   # for example: drafter==2.0.2
   DRAFTER_SPEC: "drafter>=2,<3"
+  DIAGNOSTIC_VENV: ".venv"
+  STUDENT_REQUIREMENTS: ".drafter-student-requirements.txt"
 
 jobs:
   build:
@@ -67,6 +69,56 @@ jobs:
 
           echo "main_file=$MAIN_FILE" >> "$GITHUB_OUTPUT"
           echo "Using Drafter entry file: $MAIN_FILE"
+
+      - name: Prepare course diagnostics environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Preserve student requirements, but do not allow an old Drafter
+          # pin to replace the v2 version selected by this workflow.
+          : > "$STUDENT_REQUIREMENTS"
+          if [[ -f requirements.txt ]]; then
+            grep -Eiv '^[[:space:]]*drafter(\[[^]]*\])?([[:space:]<>=!~@;]|$)' \
+              requirements.txt > "$STUDENT_REQUIREMENTS" || true
+          fi
+
+          uv venv "$DIAGNOSTIC_VENV" --python 3.12
+
+          # Keep the course diagnostics in one environment. In particular,
+          # analyze_drafter_site imports mypy at runtime.
+          uv pip install --python "$DIAGNOSTIC_VENV/bin/python" \
+            "$DRAFTER_SPEC" \
+            coverage \
+            pylint \
+            mypy \
+            analyze-drafter-site \
+            bakery \
+            matplotlib \
+            pillow
+
+          if [[ -s "$STUDENT_REQUIREMENTS" ]]; then
+            uv pip install \
+              --python "$DIAGNOSTIC_VENV/bin/python" \
+              -r "$STUDENT_REQUIREMENTS"
+
+            # A nested -r file could contain an old Drafter constraint.
+            # Reassert the workflow's Drafter v2 requirement afterward.
+            uv pip install \
+              --python "$DIAGNOSTIC_VENV/bin/python" \
+              "$DRAFTER_SPEC"
+          fi
+
+          # Fail early if one of the required diagnostic tools was not
+          # installed correctly.
+          "$DIAGNOSTIC_VENV/bin/python" - <<'PY'
+          import coverage
+          import mypy
+          import pylint
+          import analyze_drafter_site
+
+          print("Coverage, MyPy, PyLint, and analyze_drafter_site are importable.")
+          PY
 
       - name: Build Drafter v2 site
         id: build_site
@@ -153,6 +205,78 @@ jobs:
             echo "No Drafter assertion output was detected during compilation." > _site/dashboard/tests.txt
           fi
 
+      - name: Run tests and output code coverage
+        id: coverage
+        shell: bash
+        env:
+          # Drafter v2 does not currently honor this, but keep it here
+          # so coverage can be restored without restructuring the step.
+          DRAFTER_SKIP: "true"
+        run: |
+          set -euo pipefail
+
+          MAIN_FILE="${{ steps.main.outputs.main_file }}"
+          mkdir -p _site/dashboard/coverage
+
+          "$DIAGNOSTIC_VENV/bin/python" -m coverage erase
+
+          # TEMPORARILY DISABLED while DRAFTER_SKIP support is restored:
+          # "$DIAGNOSTIC_VENV/bin/python" -m coverage run "$MAIN_FILE" \
+          #   2>&1 | tee _site/dashboard/coverage.txt
+          #
+          # "$DIAGNOSTIC_VENV/bin/python" -m coverage html \
+          #   -d _site/dashboard/coverage \
+          #   2>&1 | tee -a _site/dashboard/coverage.txt
+      - name: Run linter
+        id: lint
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p _site/dashboard
+
+          shopt -s nullglob
+          PYTHON_FILES=(*.py)
+
+          if (( ${#PYTHON_FILES[@]} == 0 )); then
+            echo "No top-level Python files found." \
+              | tee _site/dashboard/lint.txt
+            exit 0
+          fi
+
+          "$DIAGNOSTIC_VENV/bin/python" -m pylint \
+            "${PYTHON_FILES[@]}" \
+            --exit-zero \
+            2>&1 | tee _site/dashboard/lint.txt
+      - name: Run type checker
+        id: typecheck
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+
+          MAIN_FILE="${{ steps.main.outputs.main_file }}"
+          MYPY_CONFIG="mypy.ini"
+
+          # Respect a student/instructor-provided config. Otherwise use the
+          # same Bakery compatibility rule as the previous workflow, without
+          # modifying the repository during the build.
+          if [[ ! -f "$MYPY_CONFIG" ]]; then
+            MYPY_CONFIG="$RUNNER_TEMP/drafter-mypy.ini"
+
+            cat > "$MYPY_CONFIG" <<'INI'
+          [mypy]
+
+          [mypy-bakery.*]
+          ignore_missing_imports = True
+          INI
+          fi
+
+          "$DIAGNOSTIC_VENV/bin/python" -m mypy \
+            --config-file "$MYPY_CONFIG" \
+            "$MAIN_FILE" \
+            2>&1 | tee _site/dashboard/type.txt
+
       # Course-specific static analysis. This is not required by Drafter v2.
       # It is kept because the previous workflow used it for grading support.
       # The tool predates Drafter v2, so treat its report as advisory until its
@@ -165,7 +289,7 @@ jobs:
           set -o pipefail
           MAIN_FILE="${{ steps.main.outputs.main_file }}"
           mkdir -p _site/dashboard/analysis
-          uvx --from analyze-drafter-site analyze_drafter_site "$MAIN_FILE" \
+          "$DIAGNOSTIC_VENV/bin/analyze_drafter_site" "$MAIN_FILE" \
             --output-dir _site/dashboard/analysis \
             --no-stdout \
             2>&1 | tee _site/dashboard/analysis.log
@@ -217,6 +341,9 @@ jobs:
               <li><a href="https://github.com/${{ github.repository }}">GitHub Repository</a></li>
               <li><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">GitHub Actions Run</a></li>
               <li><a href="tests.txt">Drafter Test Output</a></li>
+              <li><a href="coverage/index.html">Coverage Report</a></li>
+              <li><a href="lint.txt">PyLint Report</a></li>
+              <li><a href="type.txt">MyPy Report</a></li>
               <li><a href="commits.txt">Recent Commit History</a></li>
               {analysis_link}
               <li><a href="build.log">Raw Build Log</a></li>
