@@ -167,15 +167,15 @@ jobs:
             --production
           )
 
-          if (( ${#ADDITIONAL_PATHS[@]} > 0 )); then
-            ADDITIONAL_VALUE=$(IFS=';'; echo "${ADDITIONAL_PATHS[*]}")
-            DRAFTER_RUN+=(--additional-paths "$ADDITIONAL_VALUE")
-          fi
+          for path in "${ADDITIONAL_PATHS[@]}"; do
+            DRAFTER_RUN+=(--additional-paths "$path")
+          done
 
           # Keep the course dashboard reachable from Drafter's generated
           # auxiliary links without coupling the dashboard to the build itself.
           DRAFTER_RUN+=(
-            --external-pages "dashboard/ Dashboard;${{ github.server_url }}/${{ github.repository }} Repository"
+            --external-pages "dashboard/ Dashboard"
+            --external-pages "${{ github.server_url }}/${{ github.repository }} Repository"
           )
 
           {
